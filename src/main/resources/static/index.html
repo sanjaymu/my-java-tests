@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Demo App</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; color: #222; }
+        code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 4px; }
+        li { margin: 0.4rem 0; }
+    </style>
+</head>
+<body>
+<h1>Welcome to the Demo App</h1>
+<p>A Spring Boot 4 / Java 21 application.</p>
+<h2>Endpoints</h2>
+<ul>
+    <li><a href="/hello"><code>GET /hello</code></a> &mdash; returns <code>Hello, World!</code></li>
+    <li><a href="/hello?name=Spring"><code>GET /hello?name=Spring</code></a> &mdash; returns <code>Hello, Spring!</code></li>
+    <li><a href="/actuator/health"><code>GET /actuator/health</code></a> &mdash; application health status</li>
+</ul>
+</body>
+</html>
