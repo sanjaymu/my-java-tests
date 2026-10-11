@@ -2,6 +2,10 @@ package com.example.mcpserver;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.Map;
 
 import io.modelcontextprotocol.client.McpClient;
@@ -136,6 +140,22 @@ class McpServerIT {
 
         assertThat(contents.mimeType()).isEqualTo("text/html;profile=mcp-app");
         assertThat(contents.text()).startsWith("<!DOCTYPE html>").contains("ui/initialize");
+    }
+
+    @Test
+    void allowsBrowserHostOriginWithCors() throws Exception {
+        var preflight = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/mcp"))
+                .method("OPTIONS", HttpRequest.BodyPublishers.noBody())
+                .header("Origin", "http://localhost:8080")
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "content-type,mcp-session-id")
+                .build();
+
+        var response = HttpClient.newHttpClient()
+                .send(preflight, HttpResponse.BodyHandlers.discarding());
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Access-Control-Allow-Origin")).hasValue("http://localhost:8080");
     }
 
     private static String text(CallToolResult result) {

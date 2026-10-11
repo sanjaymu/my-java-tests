@@ -87,6 +87,48 @@ Responses arrive as server-sent events; the JSON is on the line starting with `d
 claude mcp add --transport http sample-tasks http://localhost:8081/mcp
 ```
 
+## See the task board in an MCP Apps host
+
+### Option 1: basic-host (tested; everything runs locally, no account needed)
+
+[basic-host](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-host) is the reference MCP Apps host from the MCP project. It has no AI model: you pick a tool and call it yourself, and it renders the tool's UI.
+
+basic-host uses ports 8080 and 8081, so run this server on **3001** (basic-host's default server URL):
+
+```bash
+# Terminal 1, from this repository's root
+PORT=3001 ./mvnw -f mcp-server/pom.xml spring-boot:run
+
+# Terminal 2 (needs Node.js and Bun: https://bun.sh)
+git clone https://github.com/modelcontextprotocol/ext-apps.git
+cd ext-apps
+npm install
+cd examples/basic-host
+SERVERS='["http://localhost:3001/mcp"]' npm run start
+```
+
+Open http://localhost:8080:
+1. Pick tool `add_task`, enter `{"title": "Buy milk"}` and click **Call Tool**. Add a few tasks this way.
+2. Pick `show_task_board` and click **Call Tool**. The board appears under the result.
+3. Click **Complete** or add tasks on the board itself.
+
+basic-host connects from the browser, so this server allows CORS from `http://localhost:8080`. To allow other browser hosts, set `MCP_CORS_ALLOWED_ORIGINS` (comma-separated).
+
+### Option 2: an AI chat host (ask "show my task board")
+
+These hosts list MCP Apps support. I haven't tested these steps, so check each host's documentation.
+
+- **VS Code with GitHub Copilot.** Add `.vscode/mcp.json`:
+  ```json
+  { "servers": { "tasks": { "type": "http", "url": "http://localhost:8081/mcp" } } }
+  ```
+  Start the server, open Copilot Chat in **Agent** mode, and ask *"show my task board"*.
+- **Claude Desktop.** Desktop config entries start local commands, so bridge to the HTTP server with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote). Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config) and restart Claude Desktop:
+  ```json
+  { "mcpServers": { "tasks": { "command": "npx", "args": ["-y", "mcp-remote", "http://localhost:8081/mcp"] } } }
+  ```
+- **Claude.ai and ChatGPT (web)** connect to MCP servers from their own cloud, so they can't reach `localhost`. They need a public HTTPS URL. Don't expose this server publicly as it is, because it has no authentication.
+
 ## Test
 
 ```bash
