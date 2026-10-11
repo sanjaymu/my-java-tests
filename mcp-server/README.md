@@ -15,12 +15,31 @@ It is a separate app from the API server in the repository root.
 | **Tool** | `get_current_time(timezone?)` | Current time; `timezone` is an **optional** parameter (defaults to UTC) |
 | **Resource** | `tasks://summary` | Read-only text summary of the task list |
 | **Prompt** | `plan_my_day(focus?)` | A ready-made prompt asking the model to plan the day around the tasks |
+| **MCP App** | `show_task_board()` + `ui://tasks/board` | An interactive task board the host shows in the chat (see below) |
 
 - **Tools** are actions the model decides to call.
 - **Resources** are data the client app chooses to load into the model's context.
 - **Prompts** are templates the user picks (for example from a menu or a slash command).
 
-The code is in `src/main/java/com/example/mcpserver/`: one class per concept (`TaskTools`, `TimeTools`, `TaskResources`, `TaskPrompts`).
+- **MCP Apps** ([SEP-1865](https://github.com/modelcontextprotocol/ext-apps), extension `io.modelcontextprotocol/ui`) let a tool show interactive UI in the chat.
+
+The code is in `src/main/java/com/example/mcpserver/`: one class per concept (`TaskTools`, `TimeTools`, `TaskResources`, `TaskPrompts`, `TaskBoardApp`).
+
+## The task board MCP App
+
+`show_task_board` is linked to a UI through its tool metadata:
+
+```json
+{ "name": "show_task_board", "_meta": { "ui": { "resourceUri": "ui://tasks/board" } } }
+```
+
+1. When the model calls `show_task_board`, a host that supports MCP Apps reads `ui://tasks/board`. That's an HTML page served with MIME type `text/html;profile=mcp-app`, from `src/main/resources/mcp-app/task-board.html`.
+2. The host renders the page in a sandboxed iframe. The page and host do the `ui/initialize` and `ui/notifications/initialized` handshake.
+3. The host sends the tool result as `ui/notifications/tool-result`. The board draws from its `structuredContent.tasks`.
+4. The **Complete** and **Add** buttons send `tools/call` (`complete_task`, `add_task`) to the host, which forwards them to this server. The board then calls `show_task_board` again to refresh.
+5. Hosts without MCP Apps support just show the tool's text content, the same summary as `tasks://summary`.
+
+The page is plain HTML and JavaScript with no SDK and no external requests, so it works under the spec's default content security policy. It also follows the host's light or dark theme and reports its size with `ui/notifications/size-changed`.
 
 ## Run
 
@@ -75,7 +94,7 @@ claude mcp add --transport http sample-tasks http://localhost:8081/mcp
 ```
 
 - Unit tests cover the task store, time tool, resource and prompt.
-- `McpServerIT` starts the server and connects a real MCP client over Streamable HTTP. It lists tools and checks their JSON schemas, calls tools (including the error case), reads the resource and gets the prompt.
+- `McpServerIT` starts the server and connects a real MCP client over Streamable HTTP. It lists tools and checks their JSON schemas, calls tools (including the error case), reads the resources and gets the prompt. It also checks the task board's `_meta.ui.resourceUri`, its `structuredContent`, and the `ui://` resource's MIME type.
 
 ## Note
 

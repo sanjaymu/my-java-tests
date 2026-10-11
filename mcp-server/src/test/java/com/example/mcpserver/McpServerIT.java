@@ -55,7 +55,8 @@ class McpServerIT {
         var tools = client.listTools().tools();
 
         assertThat(tools).extracting(Tool::name)
-                .containsExactlyInAnyOrder("add_task", "list_tasks", "complete_task", "get_current_time");
+                .containsExactlyInAnyOrder("add_task", "list_tasks", "complete_task", "get_current_time",
+                        "show_task_board");
         Tool addTask = tools.stream().filter(t -> t.name().equals("add_task")).findFirst().orElseThrow();
         assertThat(addTask.description()).isNotBlank();
         // inputSchema is the tool's JSON Schema: {"type":"object","properties":{...},"required":[...]}
@@ -104,6 +105,37 @@ class McpServerIT {
         var result = client.getPrompt(new GetPromptRequest("plan_my_day", Map.of("focus", "deep work")));
 
         assertThat(((TextContent) result.messages().getFirst().content()).text()).contains("Prioritise deep work.");
+    }
+
+    @Test
+    void taskBoardToolLinksToUiResource() {
+        Tool board = client.listTools().tools().stream()
+                .filter(t -> t.name().equals("show_task_board")).findFirst().orElseThrow();
+
+        assertThat(board.meta()).isEqualTo(Map.of("ui", Map.of("resourceUri", "ui://tasks/board")));
+    }
+
+    @Test
+    void taskBoardToolReturnsTextAndStructuredContent() {
+        client.callTool(new CallToolRequest("add_task", Map.of("title", "board check")));
+
+        CallToolResult result = client.callTool(new CallToolRequest("show_task_board", Map.of()));
+
+        assertThat(text(result)).contains("board check");
+        assertThat(result.structuredContent()).asInstanceOf(InstanceOfAssertFactories.MAP)
+                .extractingByKey("tasks").asInstanceOf(InstanceOfAssertFactories.LIST)
+                .anySatisfy(task -> assertThat(task).asInstanceOf(InstanceOfAssertFactories.MAP)
+                        .containsEntry("title", "board check")
+                        .containsEntry("done", false));
+    }
+
+    @Test
+    void readsTaskBoardUiResource() {
+        var contents = (TextResourceContents) client.readResource(new ReadResourceRequest("ui://tasks/board"))
+                .contents().getFirst();
+
+        assertThat(contents.mimeType()).isEqualTo("text/html;profile=mcp-app");
+        assertThat(contents.text()).startsWith("<!DOCTYPE html>").contains("ui/initialize");
     }
 
     private static String text(CallToolResult result) {

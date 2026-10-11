@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Board</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de;
+    --accent: #0969da; --accent-fg: #ffffff; --done: #8c959f; --error: #cf222e;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d;
+    --accent: #2f81f7; --accent-fg: #ffffff; --done: #6e7681; --error: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .summary { color: var(--muted); margin: 0 0 12px; }
+  .add { display: flex; gap: 8px; margin-bottom: 12px; }
+  input { flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+  button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; }
+  li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
+  li:first-child { border-top: none; }
+  li .title { flex: 1; overflow-wrap: anywhere; }
+  li.done .title { color: var(--done); text-decoration: line-through; }
+  .id { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .empty { padding: 12px; color: var(--muted); text-align: center; }
+  .error { color: var(--error); margin-top: 8px; min-height: 1.5em; }
+</style>
+</head>
+<body>
+<h1>Task Board</h1>
+<p class="summary" id="summary">Waiting for the host…</p>
+<!-- Not a <form>: hosts may sandbox the iframe without allow-forms, which blocks form submission. -->
+<div class="add">
+  <input id="new-title" placeholder="New task" aria-label="New task title" maxlength="200">
+  <button class="primary" type="button" id="add-button">Add</button>
+</div>
+<ul id="tasks"><li class="empty">Loading…</li></ul>
+<div class="error" id="error" role="alert"></div>
+
+<script>
+// Minimal MCP Apps "View": JSON-RPC 2.0 over postMessage with the host (no SDK needed).
+(function () {
+  const PROTOCOL_VERSION = "2026-01-26";
+  const host = window.parent;
+  const pending = new Map();
+  let nextId = 1;
+
+  const els = {
+    summary: document.getElementById("summary"),
+    tasks: document.getElementById("tasks"),
+    error: document.getElementById("error"),
+    addButton: document.getElementById("add-button"),
+    title: document.getElementById("new-title"),
+  };
+
+  function request(method, params) {
+    const id = nextId++;
+    host.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+
+  function notify(method, params) {
+    host.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== host) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+
+    // Response to one of our requests
+    if (msg.id !== undefined && pending.has(msg.id) && !msg.method) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      msg.error ? reject(new Error(msg.error.message || "Request failed")) : resolve(msg.result);
+      return;
+    }
+
+    switch (msg.method) {
+      case "ui/notifications/tool-result":
+        renderResult(msg.params);
+        break;
+      case "ui/notifications/tool-cancelled":
+        showError("The tool call was cancelled.");
+        break;
+      case "ui/notifications/host-context-changed":
+        applyTheme(msg.params && msg.params.theme);
+        break;
+      case "ui/resource-teardown":
+        host.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+        break;
+      case "ping":
+        host.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+        break;
+    }
+  });
+
+  function applyTheme(theme) {
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  }
+
+  function showError(text) {
+    els.error.textContent = text || "";
+  }
+
+  function renderResult(result) {
+    if (!result) return;
+    if (result.isError) {
+      const text = (result.content || []).map((c) => c.text).filter(Boolean).join(" ");
+      showError(text || "The tool returned an error.");
+      return;
+    }
+    const tasks = result.structuredContent && result.structuredContent.tasks;
+    if (Array.isArray(tasks)) renderTasks(tasks);
+  }
+
+  function renderTasks(tasks) {
+    const done = tasks.filter((t) => t.done).length;
+    els.summary.textContent = tasks.length === 0
+      ? "No tasks yet."
+      : done + " of " + tasks.length + " tasks done";
+
+    els.tasks.replaceChildren();
+    if (tasks.length === 0) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Add your first task above.";
+      els.tasks.append(li);
+      return;
+    }
+    for (const task of tasks) {
+      const li = document.createElement("li");
+      if (task.done) li.className = "done";
+
+      const id = document.createElement("span");
+      id.className = "id";
+      id.textContent = "#" + task.id;
+
+      // textContent, never innerHTML: titles come from users and the model.
+      const title = document.createElement("span");
+      title.className = "title";
+      title.textContent = task.title;
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = task.done ? "Done" : "Complete";
+      button.disabled = task.done;
+      button.addEventListener("click", () => run("complete_task", { id: task.id }));
+
+      li.append(id, title, button);
+      els.tasks.append(li);
+    }
+  }
+
+  // Call a server tool through the host, then reload the board.
+  async function run(tool, args) {
+    showError("");
+    try {
+      const result = await request("tools/call", { name: tool, arguments: args });
+      if (result && result.isError) return renderResult(result);
+      await refresh();
+    } catch (e) {
+      showError(e.message);
+    }
+  }
+
+  async function refresh() {
+    renderResult(await request("tools/call", { name: "show_task_board", arguments: {} }));
+  }
+
+  async function addTask() {
+    const title = els.title.value.trim();
+    if (!title) return;
+    els.title.value = "";
+    await run("add_task", { title });
+  }
+
+  els.addButton.addEventListener("click", addTask);
+  els.title.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addTask();
+  });
+
+  async function start() {
+    if (host === window) {
+      els.summary.textContent = "Open this board from an MCP Apps host (it is not a standalone page).";
+      els.tasks.replaceChildren();
+      return;
+    }
+    try {
+      const init = await request("ui/initialize", {
+        appInfo: { name: "task-board", version: "1.0.0" },
+        appCapabilities: {},
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      applyTheme(init && init.hostContext && init.hostContext.theme);
+      notify("ui/notifications/initialized", {});
+      // Tell the host when our content size changes so it can resize the iframe.
+      new ResizeObserver(() => {
+        notify("ui/notifications/size-changed", {
+          width: document.documentElement.scrollWidth,
+          height: document.documentElement.scrollHeight,
+        });
+      }).observe(document.documentElement);
+      els.summary.textContent = "Loading tasks…";
+    } catch (e) {
+      showError("Could not connect to the host: " + e.message);
+    }
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>
