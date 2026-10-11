@@ -70,3 +70,11 @@ To rotate a key, add a new version (`gcloud secrets versions add ...`) and redep
 ./mvnw test     # unit tests (*Test), no API keys needed
 ./mvnw verify   # unit + integration tests (*IT, via Failsafe)
 ```
+
+## Sample MCP server
+
+[`mcp-server/`](mcp-server/README.md) is a separate sample MCP server (tools, a resource and a prompt over Streamable HTTP) for experimenting with MCP:
+
+```bash
+./mvnw -f mcp-server/pom.xml spring-boot:run   # MCP endpoint at http://localhost:8081/mcp
+```
