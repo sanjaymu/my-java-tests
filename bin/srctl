@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Wrapper for the srctl CLI. Build first with: mvn -q package -DskipTests
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+JAR="$DIR/cli/target/srctl.jar"
+if [ ! -f "$JAR" ]; then
+  echo "srctl.jar not found. Build it with: mvn -q package -DskipTests" >&2
+  exit 1
+fi
+exec java ${SRCTL_JAVA_OPTS:-} -jar "$JAR" "$@"

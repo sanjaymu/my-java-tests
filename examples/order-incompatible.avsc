@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "Order",
+  "namespace": "com.example.orders",
+  "fields": [
+    {"name": "id", "type": "long"},
+    {"name": "customer", "type": "string"},
+    {"name": "amount", "type": "double"},
+    {"name": "currency", "type": "string"}
+  ]
+}
