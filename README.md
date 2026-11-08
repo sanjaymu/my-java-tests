@@ -8,6 +8,7 @@ A Java SDK and command-line tool (`srctl`) for **Confluent-compatible Schema Reg
 |---|---|---|
 | `sdk/` | `schema-registry-sdk` | Thread-safe Java client (JDK `HttpClient` + Jackson) |
 | `local-server/` | `schema-registry-local` | Embeddable in-memory registry server with Avro compatibility checks |
+| `serde/` | `schema-registry-serde` | JSON Schema serializer/deserializer: validates payloads and tags them with their schema id |
 | `cli/` | `schema-registry-cli` → `srctl.jar` | picocli-based CLI built on the SDK |
 
 Requires Java 17+ and Maven 3.9+.
@@ -66,10 +67,13 @@ Prefer the environment variables for secrets so they don't end up in shell histo
 | `config set <LEVEL> [--subject S]` | Set `NONE`, `BACKWARD`, `FORWARD`, `FULL` (+ `_TRANSITIVE`) |
 | `config delete <subject>` | Remove subject-level override |
 | `mode get [subject]` / `mode set <READWRITE\|READONLY\|IMPORT> [--subject S]` / `mode delete <subject>` | Registry modes |
+| `payload validate <subject> (-p FILE \| -d JSON) [-v VERSION]` | Validate a JSON payload against a JSON schema (exit code 4 if invalid) |
+| `payload encode <subject> (-p FILE \| -d JSON) [-v VERSION] [--out FILE]` | Validate and frame a payload with its schema id (prints base64 unless `--out`) |
+| `payload decode (-i FILE \| --base64 B64) [--subject S] [--no-validate]` | Resolve a framed message's schema, validate it and print the payload |
 | `local-server [--port 8081] [--host 127.0.0.1]` | Run the in-memory registry |
 
 `-f -` reads the schema from stdin. Exit codes: `0` success, `1` error, `2` usage error / schema not found
-(`lookup`), `3` incompatible (`compat check`).
+(`lookup`), `3` incompatible (`compat check`), `4` payload failed schema validation (`payload`).
 
 ## SDK usage
 
@@ -115,6 +119,59 @@ client.register("customer-value", RegisterSchemaRequest.of(customerAvro, SchemaT
 
 The SDK covers subjects, versions, register/lookup, schemas by id, soft/hard deletes, references,
 compatibility testing, and global/subject config and mode.
+
+## Producing and consuming JSON payloads (`serde`)
+
+The serde module implements the producer → registry → consumer flow:
+
+```
+Producer ──register/lookup schema──► Schema Registry ◄──fetch schema by id── Consumer
+    │                                                                          ▲
+    └──── [0][schema id][JSON payload] ────────────────────────────────────────┘
+                                                          validate → map to object
+```
+
+1. The **producer** resolves its JSON schema's id (registering it if `autoRegister(true)`), validates
+   each object against the schema and prefixes the message with the standard wire header: magic byte `0`
+   plus a 4-byte schema id.
+2. The **consumer** reads the id, fetches that exact schema (cached per id), validates the payload and maps it
+   to a Java class with Jackson.
+3. Producers on **different versions** (v1, v2, …) can write to the same consumer. Each message is validated
+   against the version it was written with. Unknown properties are ignored, so an older model can still read
+   newer payloads.
+
+```java
+// Producer
+JsonSchemaSerializer serializer = JsonSchemaSerializer.builder(client)
+        .subject("orders-value")
+        .schema(orderJsonSchema)     // or .useLatestVersion() / .useVersion(2)
+        .autoRegister(true)
+        .build();
+byte[] message = serializer.serialize(new Order(1001, "acme", 25.5));   // throws SerdeException if invalid
+
+// Consumer
+JsonSchemaDeserializer deserializer = JsonSchemaDeserializer.builder(client)
+        .expectedSubject("orders-value")   // optional: reject schemas from other subjects
+        .build();
+Order order = deserializer.deserialize(message, Order.class);
+DeserializedMessage<Order> withMeta = deserializer.deserializeWithMetadata(message, Order.class);
+withMeta.version();   // which schema version the producer used
+```
+
+`SerdeException.validationErrors()` lists every schema violation. JSON Schema drafts 4 through 2020-12 are
+supported; the draft is read from `$schema` and defaults to draft-07. Validation uses
+[networknt/json-schema-validator](https://github.com/networknt/json-schema-validator). Schema references
+(`$ref` to other registered subjects) are not resolved yet.
+
+From the CLI:
+
+```bash
+./bin/srctl schema register orders-value -t JSON -f examples/order-v1.schema.json
+./bin/srctl schema register orders-value -t JSON -f examples/order-v2.schema.json
+./bin/srctl payload validate orders-value -p examples/order-invalid.json      # INVALID, exit 4
+MSG=$(./bin/srctl payload encode orders-value -p examples/order-v2.json)
+./bin/srctl payload decode --base64 "$MSG" --subject orders-value              # Schema ID: 2 (orders-value v2)
+```
 
 ## Using the local server in tests
 

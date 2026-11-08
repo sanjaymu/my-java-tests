@@ -22,6 +22,10 @@
       <artifactId>schema-registry-local</artifactId>
     </dependency>
     <dependency>
+      <groupId>com.sanjaymu.schemaregistry</groupId>
+      <artifactId>schema-registry-serde</artifactId>
+    </dependency>
+    <dependency>
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
     </dependency>

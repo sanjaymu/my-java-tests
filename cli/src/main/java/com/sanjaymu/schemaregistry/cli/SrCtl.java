@@ -22,6 +22,7 @@ import java.time.Duration;
                 "  srctl subjects list",
                 "  srctl schema register orders-value --file order.avsc",
                 "  srctl compat check orders-value --file order-v2.avsc --verbose",
+                "  srctl payload validate orders-value --payload order.json",
                 "  srctl local-server --port 8081"},
         subcommands = {
                 SubjectsCommand.class,
@@ -29,6 +30,7 @@ import java.time.Duration;
                 CompatCommand.class,
                 ConfigCommand.class,
                 ModeCommand.class,
+                PayloadCommand.class,
                 LocalServerCommand.class,
                 CommandLine.HelpCommand.class
         })
