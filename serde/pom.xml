@@ -10,8 +10,8 @@
   </parent>
 
   <artifactId>schema-registry-serde</artifactId>
-  <name>Schema Registry JSON Schema Serde</name>
-  <description>Schema-validated JSON serializer/deserializer using the registry wire format</description>
+  <name>Schema Registry JSON Serde</name>
+  <description>JSON serializer/deserializer that enforces registered schemas through Java model types</description>
 
   <dependencies>
     <dependency>
@@ -27,8 +27,12 @@
       <artifactId>jackson-datatype-jsr310</artifactId>
     </dependency>
     <dependency>
-      <groupId>com.networknt</groupId>
-      <artifactId>json-schema-validator</artifactId>
+      <groupId>jakarta.validation</groupId>
+      <artifactId>jakarta.validation-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.hibernate.validator</groupId>
+      <artifactId>hibernate-validator</artifactId>
     </dependency>
     <dependency>
       <groupId>com.github.victools</groupId>
@@ -37,6 +41,10 @@
     <dependency>
       <groupId>com.github.victools</groupId>
       <artifactId>jsonschema-module-jackson</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.github.victools</groupId>
+      <artifactId>jsonschema-module-jakarta-validation</artifactId>
     </dependency>
     <dependency>
       <groupId>com.sanjaymu.schemaregistry</groupId>

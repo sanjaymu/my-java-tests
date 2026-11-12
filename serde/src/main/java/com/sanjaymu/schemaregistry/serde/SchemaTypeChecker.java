@@ -33,11 +33,13 @@ import java.util.UUID;
  *       {@code array} → {@code String};</li>
  *   <li>the schema allows {@code null} but the Java type is primitive;</li>
  *   <li>schema enum values that the Java enum does not define;</li>
- *   <li>a Java property the schema forbids ({@code additionalProperties: false}).</li>
+ *   <li>a Java property the schema forbids ({@code additionalProperties: false});</li>
+ *   <li>a property {@link JavaContract} requires (primitive, {@code @NotNull}, …) that the schema does not define —
+ *       every message would be rejected.</li>
  * </ul>
  * <b>Warnings</b> (typical during schema evolution): optional schema properties the class lacks
- * (ignored on read), Java properties the schema does not define (always {@code null}/default), optional
- * properties mapped to primitives (default to {@code 0}/{@code false}), and constructs that are not checked
+ * (ignored on read), optional Java properties the schema does not define (always {@code null}), properties
+ * required in Java but optional in the schema (messages without them are rejected), and constructs that are not checked
  * ({@code oneOf}/{@code anyOf}/{@code allOf}, external {@code $ref}).
  */
 public final class SchemaTypeChecker {
@@ -228,11 +230,9 @@ public final class SchemaTypeChecker {
                     continue;
                 }
                 JavaType propType = jp.getPrimaryType();
-                if (propType.isPrimitive() && !required.contains(name) && !typesOf(deref(childPath, e.getValue()))
-                        .contains("null")) {
-                    warnings.add(childPath + ": optional in the schema but Java type is primitive " + name(propType)
-                            + "; it defaults to " + (propType.getRawClass() == boolean.class ? "false" : "0")
-                            + " when absent");
+                if (JavaContract.isRequired(jp) && !required.contains(name)) {
+                    warnings.add(childPath + ": required in " + name(jt) + " but optional in the schema; "
+                            + "messages without it will be rejected");
                 }
                 check(childPath, e.getValue(), propType);
             }
@@ -241,12 +241,15 @@ public final class SchemaTypeChecker {
                     continue;
                 }
                 JsonNode additional = schema.get("additionalProperties");
-                if (additional != null && additional.isBoolean() && !additional.asBoolean()) {
+                if (JavaContract.isRequired(javaProps.get(javaName))) {
+                    errors.add(path + "." + javaName + ": required in " + name(jt)
+                            + " but not defined in the schema; every message would be rejected");
+                } else if (additional != null && additional.isBoolean() && !additional.asBoolean()) {
                     errors.add(path + "." + javaName + ": Java property of " + name(jt)
                             + " is not allowed by the schema (additionalProperties: false)");
                 } else {
                     warnings.add(path + "." + javaName + ": Java property of " + name(jt)
-                            + " is not defined in the schema; it will usually be null/default");
+                            + " is not defined in the schema; it will usually be null");
                 }
             }
         }

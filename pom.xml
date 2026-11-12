@@ -23,7 +23,7 @@
     <jackson.version>2.18.2</jackson.version>
     <picocli.version>4.7.6</picocli.version>
     <junit.version>5.11.3</junit.version>
-    <json-schema-validator.version>1.5.8</json-schema-validator.version>
+    <hibernate-validator.version>8.0.4.Final</hibernate-validator.version>
     <victools.version>4.38.0</victools.version>
   </properties>
 
@@ -60,9 +60,19 @@
         <version>2.0.16</version>
       </dependency>
       <dependency>
-        <groupId>com.networknt</groupId>
-        <artifactId>json-schema-validator</artifactId>
-        <version>${json-schema-validator.version}</version>
+        <groupId>com.github.victools</groupId>
+        <artifactId>jsonschema-module-jakarta-validation</artifactId>
+        <version>${victools.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.validation</groupId>
+        <artifactId>jakarta.validation-api</artifactId>
+        <version>3.0.2</version>
+      </dependency>
+      <dependency>
+        <groupId>org.hibernate.validator</groupId>
+        <artifactId>hibernate-validator</artifactId>
+        <version>${hibernate-validator.version}</version>
       </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>

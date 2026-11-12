@@ -10,6 +10,10 @@ import com.github.victools.jsonschema.generator.SchemaGeneratorConfigBuilder;
 import com.github.victools.jsonschema.generator.SchemaVersion;
 import com.github.victools.jsonschema.module.jackson.JacksonModule;
 import com.github.victools.jsonschema.module.jackson.JacksonOption;
+import com.github.victools.jsonschema.module.jakarta.validation.JakartaValidationModule;
+import com.github.victools.jsonschema.module.jakarta.validation.JakartaValidationOption;
+
+import java.lang.annotation.Annotation;
 
 /**
  * Generates a JSON Schema (draft-07) from a Java class, so the Java model is the single source of truth
@@ -19,7 +23,11 @@ import com.github.victools.jsonschema.module.jackson.JacksonOption;
  * <ul>
  *   <li>Property names follow Jackson ({@code @JsonProperty}, naming strategies, records, getters/fields).</li>
  *   <li>Primitive fields ({@code int}, {@code long}, {@code double}, {@code boolean}, …) are <b>required</b>
- *       and non-nullable; fields annotated {@code @JsonProperty(required = true)} are required too.</li>
+ *       and non-nullable, as are fields annotated {@code @JsonProperty(required = true)}, {@code @NotNull},
+ *       {@code @NotBlank} or {@code @NotEmpty} — the same rules {@link JavaContract} enforces in code.</li>
+ *   <li>Jakarta Bean Validation constraints become schema keywords: {@code @Size} → {@code minLength}/{@code maxItems},
+ *       {@code @Min}/{@code @PositiveOrZero} → {@code minimum}, {@code @Pattern} → {@code pattern},
+ *       {@code @Email} → {@code format: email}, …</li>
  *   <li>All other fields are optional and nullable ({@code ["string","null"]}), matching how Jackson writes
  *       {@code null} values.</li>
  *   <li>Enums become string enums; collections become arrays; maps become objects with
@@ -40,16 +48,27 @@ public final class JavaTypeSchemaGenerator {
                         JacksonOption.RESPECT_JSONPROPERTY_ORDER,
                         JacksonOption.FLATTENED_ENUMS_FROM_JSONVALUE,
                         JacksonOption.FLATTENED_ENUMS_FROM_JSONPROPERTY))
+                .with(new JakartaValidationModule(JakartaValidationOption.NOT_NULLABLE_FIELD_IS_REQUIRED,
+                        JakartaValidationOption.INCLUDE_PATTERN_EXPRESSIONS))
                 .with(Option.EXTRA_OPEN_API_FORMAT_VALUES)
                 .with(Option.FLATTENED_ENUMS)
                 .with(Option.MAP_VALUES_AS_ADDITIONAL_PROPERTIES);
-        b.forFields().withRequiredCheck(JavaTypeSchemaGenerator::isPrimitive);
-        b.forFields().withNullableCheck(f -> !isPrimitive(f) && !isJacksonRequired(f));
+        b.forFields().withRequiredCheck(f -> isPrimitive(f) || isJacksonRequired(f) || hasRequiredAnnotation(f));
+        b.forFields().withNullableCheck(f -> !isPrimitive(f) && !isJacksonRequired(f) && !hasRequiredAnnotation(f));
         return b.build();
     }
 
     private static boolean isPrimitive(FieldScope field) {
         return field.getType() != null && field.getType().getErasedType().isPrimitive();
+    }
+
+    private static boolean hasRequiredAnnotation(FieldScope field) {
+        for (Class<? extends Annotation> a : JavaContract.requiredAnnotations()) {
+            if (field.getAnnotationConsideringFieldAndGetter(a) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isJacksonRequired(FieldScope field) {

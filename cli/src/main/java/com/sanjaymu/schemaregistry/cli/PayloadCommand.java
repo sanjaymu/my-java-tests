@@ -1,15 +1,19 @@
 package com.sanjaymu.schemaregistry.cli;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.sanjaymu.schemaregistry.client.model.SchemaType;
-import com.sanjaymu.schemaregistry.client.model.SchemaVersion;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sanjaymu.schemaregistry.serde.DeserializedMessage;
+import com.sanjaymu.schemaregistry.serde.JavaContract;
 import com.sanjaymu.schemaregistry.serde.JsonSchemaDeserializer;
 import com.sanjaymu.schemaregistry.serde.JsonSchemaSerializer;
-import com.sanjaymu.schemaregistry.serde.JsonSchemaValidator;
+import com.sanjaymu.schemaregistry.serde.SchemaTypeMismatchException;
 import com.sanjaymu.schemaregistry.serde.SerdeException;
+import com.sanjaymu.schemaregistry.serde.SerdeMappers;
+import com.sanjaymu.schemaregistry.serde.WireFormat;
 import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -17,18 +21,22 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-@Command(name = "payload", description = "Validate, encode and decode JSON payloads against registered JSON schemas.",
+@Command(name = "payload",
+        description = "Validate, encode and decode JSON payloads, enforcing the schema through a Java model class.",
         mixinStandardHelpOptions = true,
         subcommands = {PayloadCommand.ValidateCmd.class, PayloadCommand.EncodeCmd.class, PayloadCommand.DecodeCmd.class})
 final class PayloadCommand {
 
-    /** Exit code when a payload fails schema validation. */
+    /** Exit code when a payload violates the Java model's contract. */
     static final int INVALID = 4;
+
+    static final ObjectMapper MAPPER = SerdeMappers.defaultMapper();
 
     static final class JsonInput {
         @Option(names = {"-p", "--payload"}, required = true, paramLabel = "PATH",
@@ -38,13 +46,15 @@ final class PayloadCommand {
         @Option(names = {"-d", "--data"}, required = true, paramLabel = "JSON", description = "Inline JSON payload.")
         String inline;
 
-        String read() throws IOException {
-            if (inline != null) {
-                return inline;
-            }
-            return "-".equals(file.toString())
-                    ? new String(System.in.readAllBytes(), StandardCharsets.UTF_8)
+        JsonNode read() throws IOException {
+            String text = inline != null ? inline
+                    : "-".equals(file.toString()) ? new String(System.in.readAllBytes(), StandardCharsets.UTF_8)
                     : Files.readString(file);
+            try {
+                return MAPPER.readTree(text);
+            } catch (JsonProcessingException e) {
+                throw new IllegalArgumentException("Payload is not valid JSON: " + e.getOriginalMessage());
+            }
         }
     }
 
@@ -52,7 +62,7 @@ final class PayloadCommand {
         if (cmd.jsonOutput()) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("valid", false);
-            m.put("schema", context);
+            m.put("against", context);
             m.put("errors", errors);
             cmd.printJson(m);
         } else {
@@ -62,89 +72,94 @@ final class PayloadCommand {
         return INVALID;
     }
 
-    @Command(name = "validate", description = "Validate a JSON payload against a subject version. Exits with 4 when invalid.",
+    static int reportMismatch(BaseCommand cmd, SchemaTypeMismatchException e) {
+        if (cmd.jsonOutput()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("matches", false);
+            m.put("errors", e.report().errors());
+            m.put("warnings", e.report().warnings());
+            cmd.printJson(m);
+        } else {
+            cmd.out().println("TYPE MISMATCH: " + e.getMessage());
+        }
+        return TypeCommands.TYPE_MISMATCH;
+    }
+
+    @Command(name = "validate",
+            description = "Map a JSON payload into a Java class and check its contract (required properties, types, "
+                    + "Bean Validation constraints). Exits with 4 when invalid.",
             mixinStandardHelpOptions = true)
     static final class ValidateCmd extends BaseCommand {
-        @Parameters(index = "0", description = "Subject name.")
-        String subject;
+        @Mixin
+        JavaClassInput model;
 
         @ArgGroup(exclusive = true, multiplicity = "1")
         JsonInput input;
 
-        @Option(names = {"-v", "--version"}, defaultValue = "latest", description = "Version (default: ${DEFAULT-VALUE}).")
-        String version;
-
         @Override
         int run() throws Exception {
-            SchemaVersion sv = client().getSchemaVersion(subject, version);
-            if (sv.type() != SchemaType.JSON) {
-                throw new IllegalArgumentException("Subject '" + subject + "' version " + sv.version() + " is "
-                        + sv.type() + "; payload validation supports JSON schemas only");
-            }
-            JsonNode payload;
+            Class<?> type = model.load();
+            String context = type.getName();
             try {
-                payload = JSON.readTree(input.read());
-            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-                throw new IllegalArgumentException("Payload is not valid JSON: " + e.getOriginalMessage());
+                new JavaContract(MAPPER).read(input.read(), type);
+            } catch (SerdeException e) {
+                if (e.isValidationFailure()) {
+                    return reportInvalid(this, e.validationErrors(), context);
+                }
+                throw new IllegalArgumentException(e.getMessage());
             }
-            String context = subject + " v" + sv.version() + " (id " + sv.id() + ")";
-            List<String> errors = JsonSchemaValidator.compile(sv.schema()).validate(payload);
-            if (!errors.isEmpty()) {
-                return reportInvalid(this, errors, context);
-            }
-            print(Map.of("valid", true, "schema", context), "VALID against " + context);
+            print(Map.of("valid", true, "against", context), "VALID against " + context);
             return 0;
         }
     }
 
-    @Command(name = "encode", description = "Validate a JSON payload and frame it with its schema id (registry wire format).",
+    @Command(name = "encode",
+            description = "Map a JSON payload into a Java class, enforce its contract and frame it with the schema id "
+                    + "generated from that class (registry wire format).",
             mixinStandardHelpOptions = true)
     static final class EncodeCmd extends BaseCommand {
         @Parameters(index = "0", description = "Subject name.")
         String subject;
 
+        @Mixin
+        JavaClassInput model;
+
         @ArgGroup(exclusive = true, multiplicity = "1")
         JsonInput input;
 
-        @Option(names = {"-v", "--version"}, defaultValue = "latest", description = "Version (default: ${DEFAULT-VALUE}).")
-        String version;
+        @Option(names = "--register", description = "Register the class's schema under the subject if it isn't yet.")
+        boolean register;
 
         @Option(names = "--out", paramLabel = "PATH", description = "Write binary message to a file (default: print base64).")
         Path outFile;
 
         @Override
         int run() throws Exception {
-            JsonSchemaSerializer.Builder b = JsonSchemaSerializer.builder(client()).subject(subject);
-            if ("latest".equalsIgnoreCase(version)) {
-                b.useLatestVersion();
-            } else {
-                b.useVersion(Integer.parseInt(version));
-            }
-            JsonSchemaSerializer serializer = b.build();
+            Class<?> type = model.load();
+            JsonSchemaSerializer serializer = JsonSchemaSerializer.builder(client())
+                    .subject(subject).forType(type).autoRegister(register).build();
             byte[] message;
             try {
-                message = serializer.serializeJson(input.read());
+                Object value = new JavaContract(MAPPER).read(input.read(), type);
+                message = serializer.serialize(value);
+            } catch (SchemaTypeMismatchException e) {
+                return reportMismatch(this, e);
             } catch (SerdeException e) {
                 if (e.isValidationFailure()) {
-                    return reportInvalid(this, e.validationErrors(), subject + " v" + serializer.schemaVersion()
-                            + " (id " + serializer.schemaId() + ")");
+                    return reportInvalid(this, e.validationErrors(), type.getName());
                 }
                 throw new IllegalArgumentException(e.getMessage());
             }
-            String b64 = Base64.getEncoder().encodeToString(message);
             if (outFile != null) {
                 Files.write(outFile, message);
             }
+            String b64 = Base64.getEncoder().encodeToString(message);
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("schemaId", serializer.schemaId());
             m.put("subject", subject);
             m.put("version", serializer.schemaVersion());
             m.put("bytes", message.length);
-            if (outFile != null) {
-                m.put("file", outFile.toString());
-            } else {
-                m.put("base64", b64);
-            }
+            m.put(outFile != null ? "file" : "base64", outFile != null ? outFile.toString() : b64);
             print(m, outFile != null
                     ? "Wrote " + message.length + " bytes (schema id " + serializer.schemaId() + ") to " + outFile
                     : b64);
@@ -152,7 +167,8 @@ final class PayloadCommand {
         }
     }
 
-    @Command(name = "decode", description = "Decode a framed message: resolve its schema, validate and print the payload.",
+    @Command(name = "decode",
+            description = "Decode a framed message. With --class, map it into that Java class and enforce its contract.",
             mixinStandardHelpOptions = true)
     static final class DecodeCmd extends BaseCommand {
         static final class Source {
@@ -166,11 +182,16 @@ final class PayloadCommand {
         @ArgGroup(exclusive = true, multiplicity = "1")
         Source source;
 
+        @Option(names = {"-c", "--class"}, paramLabel = "FQCN",
+                description = "Java model to decode into (enforces its contract and checks it against the schema).")
+        String className;
+
+        @Option(names = {"--classpath", "--cp"}, paramLabel = "PATH", split = "${sys:path.separator}",
+                description = "Directories or jars containing the class.")
+        List<Path> classpath = new ArrayList<>();
+
         @Option(names = "--subject", description = "Require the schema to be registered under this subject.")
         String subject;
-
-        @Option(names = "--no-validate", description = "Skip schema validation.")
-        boolean noValidate;
 
         @Override
         int run() throws Exception {
@@ -181,20 +202,33 @@ final class PayloadCommand {
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("--base64 value is not valid base64");
             }
-            JsonSchemaDeserializer.Builder b = JsonSchemaDeserializer.builder(client()).validate(!noValidate);
+            Class<?> type = JsonNode.class;
+            if (className != null) {
+                JavaClassInput loader = new JavaClassInput();
+                loader.className = className;
+                loader.classpath = classpath;
+                type = loader.load();
+            }
+            JsonSchemaDeserializer.Builder b = JsonSchemaDeserializer.builder(client());
             if (subject != null) {
                 b.expectedSubject(subject);
             }
-            DeserializedMessage<JsonNode> msg;
+            if (className != null) {
+                b.targetType(type);
+            }
+            DeserializedMessage<?> msg;
             try {
-                msg = b.build().deserializeWithMetadata(message, JsonNode.class);
+                msg = b.build().deserializeWithMetadata(message, type);
+            } catch (SchemaTypeMismatchException e) {
+                return reportMismatch(this, e);
             } catch (SerdeException e) {
                 if (e.isValidationFailure()) {
-                    return reportInvalid(this, e.validationErrors(), "schema id " + com.sanjaymu.schemaregistry.serde
-                            .WireFormat.decode(message).schemaId());
+                    return reportInvalid(this, e.validationErrors(), "schema id " + WireFormat.decode(message).schemaId()
+                            + " as " + type.getName());
                 }
                 throw new IllegalArgumentException(e.getMessage());
             }
+            JsonNode payload = MAPPER.valueToTree(msg.value());
             if (jsonOutput()) {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("schemaId", msg.schemaId());
@@ -202,12 +236,16 @@ final class PayloadCommand {
                     m.put("subject", msg.subject());
                     m.put("version", msg.version());
                 }
-                m.put("payload", msg.value());
+                if (className != null) {
+                    m.put("class", type.getName());
+                }
+                m.put("payload", payload);
                 printJson(m);
             } else {
                 out().println("Schema ID: " + msg.schemaId()
-                        + (msg.subject() != null ? " (" + msg.subject() + " v" + msg.version() + ")" : ""));
-                out().println(JSON.writeValueAsString(msg.value()));
+                        + (msg.subject() != null ? " (" + msg.subject() + " v" + msg.version() + ")" : "")
+                        + (className != null ? " as " + type.getName() : " (raw JSON; pass --class to enforce a model)"));
+                out().println(JSON.writeValueAsString(payload));
             }
             return 0;
         }

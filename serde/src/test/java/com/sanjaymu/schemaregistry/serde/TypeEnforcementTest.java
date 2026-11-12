@@ -56,6 +56,9 @@ class TypeEnforcementTest {
     public record TagsAsString(long id, String customer, String tags) {
     }
 
+    public record ExtraNote(long id, String customer, String note) {
+    }
+
     public record QuantitiesAsStrings(long id, String customer, Map<String, Boolean> quantities) {
     }
 
@@ -70,15 +73,6 @@ class TypeEnforcementTest {
             assertEquals("uuid", schema.at("/properties/trackingId/format").asText());
             assertEquals("integer", schema.at("/properties/quantities/additionalProperties/type").asText());
             assertEquals("OrderV1", schema.get("title").asText());
-        }
-
-        @Test
-        void generatedSchemaValidatesInstancesOfTheType() throws Exception {
-            JsonSchemaValidator validator = JsonSchemaValidator.compile(JavaTypeSchemaGenerator.generate(OrderV1.class));
-            assertEquals(List.of(), validator.validate(MAPPER.valueToTree(sampleV1())));
-            assertEquals(List.of(), validator.validate(MAPPER.valueToTree(
-                    new OrderV1(1, "acme", null, null, null, null, null, null, null))));
-            assertFalse(validator.validate(MAPPER.readTree("{\"id\":1}")).isEmpty(), "customer is required");
         }
 
         @Test
@@ -139,12 +133,24 @@ class TypeEnforcementTest {
         }
 
         @Test
+        void javaRequiredPropertiesMustExistInTheSchema() {
+            String noPriority = JavaTypeSchemaGenerator.generate(OrderV2.class);
+            TypeCheckReport r = CHECKER.check(noPriority, OrderV3.class);
+            assertEquals(List.of("$.priority: required in OrderV3 but not defined in the schema; "
+                    + "every message would be rejected"), r.errors());
+            String optionalId = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},"
+                    + "\"customer\":{\"type\":\"string\"}},\"required\":[\"customer\"]}";
+            assertTrue(CHECKER.check(optionalId, MissingCustomer.class).warnings().contains(
+                    "$.id: required in MissingCustomer but optional in the schema; messages without it will be rejected"));
+        }
+
+        @Test
         void closedSchemasRejectUnknownJavaProperties() {
             String closed = """
                     {"type":"object","additionalProperties":false,
                      "properties":{"id":{"type":"integer"},"customer":{"type":"string"}},"required":["id","customer"]}""";
-            assertEquals(List.of("$.amount: Java property of AmountAsPrimitiveInt is not allowed by the schema "
-                    + "(additionalProperties: false)"), CHECKER.check(closed, AmountAsPrimitiveInt.class).errors());
+            assertEquals(List.of("$.note: Java property of ExtraNote is not allowed by the schema "
+                    + "(additionalProperties: false)"), CHECKER.check(closed, ExtraNote.class).errors());
         }
 
         @Test

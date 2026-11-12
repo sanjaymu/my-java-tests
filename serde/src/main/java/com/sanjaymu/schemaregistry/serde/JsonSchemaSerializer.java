@@ -7,12 +7,23 @@ import com.sanjaymu.schemaregistry.client.model.RegisterSchemaRequest;
 import com.sanjaymu.schemaregistry.client.model.SchemaType;
 import com.sanjaymu.schemaregistry.client.model.SchemaVersion;
 
-import java.nio.charset.StandardCharsets;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Producer side: converts objects to JSON, validates them against the subject's JSON schema and
- * prefixes the schema id ({@link WireFormat}).
+ * Producer side: writes Java model objects as JSON prefixed with their schema id ({@link WireFormat}).
+ * <p>
+ * The schema is enforced in Java code, not by validating JSON against a schema:
+ * <ul>
+ *   <li>the object's class must match the registered schema (checked once per class with
+ *       {@link SchemaTypeChecker}; with {@link Builder#forType} the schema is generated from the class);</li>
+ *   <li>the object must satisfy its Jakarta Bean Validation constraints and required properties
+ *       ({@link JavaContract}).</li>
+ * </ul>
+ * Untyped values ({@code Map}, {@code JsonNode}, strings, numbers, collections) are rejected because they carry no
+ * contract.
  *
  * <pre>{@code
  * JsonSchemaSerializer serializer = JsonSchemaSerializer.builder(client)
@@ -23,36 +34,40 @@ import java.util.Objects;
  * byte[] message = serializer.serialize(order);
  * }</pre>
  *
- * Instead of {@link Builder#forType}, a hand-written schema can be supplied with {@link Builder#schema}, or an
- * already-registered version selected with {@link Builder#useVersion}/{@link Builder#useLatestVersion}.
- *
- * The schema id is resolved once, on first use, and then reused. Thread-safe.
+ * Alternatively write with an already-registered version via {@link Builder#useVersion}/{@link Builder#useLatestVersion},
+ * or a hand-written schema via {@link Builder#schema}; the object's class is then checked against that schema.
+ * Thread-safe.
  */
 public final class JsonSchemaSerializer {
 
     private final SchemaRegistryClient client;
     private final ObjectMapper mapper;
+    private final JavaContract contract;
+    private final SchemaTypeChecker typeChecker;
     private final String subject;
     private final String schema;
     private final Class<?> type;
     private final boolean autoRegister;
     private final String version;
     private final boolean validate;
+    private final Map<Class<?>, TypeCheckReport> checkedClasses = new ConcurrentHashMap<>();
 
     private volatile Resolved resolved;
 
-    private record Resolved(int schemaId, int version, JsonSchemaValidator validator) {
+    private record Resolved(int schemaId, int version, String schema) {
     }
 
     private JsonSchemaSerializer(Builder b) {
         this.client = b.client;
         this.mapper = b.mapper;
+        this.contract = new JavaContract(mapper);
+        this.typeChecker = new SchemaTypeChecker(mapper);
         this.subject = Objects.requireNonNull(b.subject, "subject is required");
-        this.type = b.type;
-        this.schema = b.type != null ? JavaTypeSchemaGenerator.generate(b.type) : b.schema;
         if (b.type != null && b.schema != null) {
             throw new IllegalArgumentException("forType(...) and schema(...) are mutually exclusive");
         }
+        this.type = b.type;
+        this.schema = b.type != null ? JavaTypeSchemaGenerator.generate(b.type) : b.schema;
         this.autoRegister = b.autoRegister;
         this.version = b.version;
         this.validate = b.validate;
@@ -60,7 +75,7 @@ public final class JsonSchemaSerializer {
             throw new IllegalArgumentException("Provide forType(...), schema(...) or useVersion(...)/useLatestVersion()");
         }
         if (schema != null && version != null) {
-            throw new IllegalArgumentException("schema(...) and useVersion(...) are mutually exclusive");
+            throw new IllegalArgumentException("forType(...)/schema(...) and useVersion(...) are mutually exclusive");
         }
     }
 
@@ -68,34 +83,41 @@ public final class JsonSchemaSerializer {
         return new Builder(client);
     }
 
-    /** Serializes an object (POJO, record, Map or {@link JsonNode}) into a framed, validated message. */
+    /**
+     * Serializes a Java model object into a framed message.
+     *
+     * @throws SerdeException              if the object violates its constraints ({@link SerdeException#validationErrors()})
+     * @throws SchemaTypeMismatchException if the object's class does not match the registered schema
+     * @throws IllegalArgumentException    for untyped values or objects of the wrong class
+     */
     public byte[] serialize(Object value) {
         Objects.requireNonNull(value, "value must not be null");
-        if (type != null && !type.isInstance(value) && !(value instanceof JsonNode)) {
+        if (value instanceof JsonNode || value instanceof Map || value instanceof Collection
+                || value instanceof CharSequence || value instanceof Number || value instanceof Boolean) {
+            throw new IllegalArgumentException("Serializer requires a Java model object so the schema can be enforced "
+                    + "in code; got " + value.getClass().getName());
+        }
+        if (type != null && !type.isInstance(value)) {
             throw new IllegalArgumentException("This serializer writes " + type.getName() + " but got "
                     + value.getClass().getName());
         }
-        JsonNode node = value instanceof JsonNode n ? n : mapper.valueToTree(value);
         Resolved r = resolve();
+        TypeCheckReport report = checkedClasses.computeIfAbsent(value.getClass(),
+                c -> typeChecker.check(r.schema(), c));
+        if (report.hasErrors()) {
+            throw new SchemaTypeMismatchException(value.getClass().getName() + " does not match schema id "
+                    + r.schemaId() + " (" + subject + " v" + r.version() + ")", report);
+        }
         if (validate) {
-            r.validator().validateOrThrow(node, "schema id " + r.schemaId() + " (" + subject + " v" + r.version() + ")");
+            contract.validateOrThrow(value);
         }
         byte[] json;
         try {
-            json = mapper.writeValueAsBytes(node);
+            json = mapper.writeValueAsBytes(value);
         } catch (Exception e) {
             throw new SerdeException("Could not write JSON payload", e);
         }
         return WireFormat.encode(r.schemaId(), json);
-    }
-
-    /** Serializes raw JSON text (validated like any other value). */
-    public byte[] serializeJson(String json) {
-        try {
-            return serialize(mapper.readTree(json));
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            throw new SerdeException("Payload is not valid JSON: " + e.getOriginalMessage(), e);
-        }
     }
 
     /** The JSON schema this serializer registers/looks up ({@code null} when using an existing version). */
@@ -134,7 +156,7 @@ public final class JsonSchemaSerializer {
                     throw new SerdeException("Subject '" + subject + "' version " + sv.version() + " is "
                             + sv.type() + ", expected JSON");
                 }
-                resolved = new Resolved(sv.id(), sv.version(), JsonSchemaValidator.compile(sv.schema()));
+                resolved = new Resolved(sv.id(), sv.version(), sv.schema());
             }
             return resolved;
         }
@@ -160,12 +182,6 @@ public final class JsonSchemaSerializer {
             return this;
         }
 
-        /** The producer's JSON schema. It is looked up (or registered, see {@link #autoRegister}) on first use. */
-        public Builder schema(String schema) {
-            this.schema = schema;
-            return this;
-        }
-
         /**
          * Generates the schema from a Java class (see {@link JavaTypeSchemaGenerator}), so the registered schema
          * always matches the producer's model. Only instances of this type are accepted by {@code serialize}.
@@ -175,7 +191,13 @@ public final class JsonSchemaSerializer {
             return this;
         }
 
-        /** Register {@link #schema} if it is not registered yet (default {@code false}). */
+        /** A hand-written JSON schema. Objects are checked against it with {@link SchemaTypeChecker}. */
+        public Builder schema(String schema) {
+            this.schema = schema;
+            return this;
+        }
+
+        /** Register the schema if it is not registered yet (default {@code false}). */
         public Builder autoRegister(boolean autoRegister) {
             this.autoRegister = autoRegister;
             return this;
@@ -193,13 +215,13 @@ public final class JsonSchemaSerializer {
             return this;
         }
 
-        /** Validate payloads before sending (default {@code true}). */
+        /** Enforce Bean Validation constraints before sending (default {@code true}). */
         public Builder validate(boolean validate) {
             this.validate = validate;
             return this;
         }
 
-        /** Jackson mapper used to convert objects to JSON. */
+        /** Jackson mapper used to write objects. Defaults to {@link SerdeMappers#defaultMapper()}. */
         public Builder objectMapper(ObjectMapper mapper) {
             this.mapper = Objects.requireNonNull(mapper);
             return this;

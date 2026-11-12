@@ -22,7 +22,7 @@ import java.time.Duration;
                 "  srctl subjects list",
                 "  srctl schema register orders-value --file order.avsc",
                 "  srctl compat check orders-value --file order-v2.avsc --verbose",
-                "  srctl payload validate orders-value --payload order.json",
+                "  srctl payload validate --class com.example.Order --cp target/classes --payload order.json",
                 "  srctl schema generate --class com.example.Order --cp target/classes --register orders-value",
                 "  srctl schema check-type orders-value --class com.example.Order --cp target/classes",
                 "  srctl local-server --port 8081"},
@@ -111,6 +111,8 @@ public final class SrCtl {
     }
 
     public static void main(String[] args) {
+        // Route Hibernate Validator's startup logging to SLF4J (silenced by slf4j-nop) instead of stderr.
+        System.setProperty("org.jboss.logging.provider", System.getProperty("org.jboss.logging.provider", "slf4j"));
         System.exit(commandLine().execute(args));
     }
 }

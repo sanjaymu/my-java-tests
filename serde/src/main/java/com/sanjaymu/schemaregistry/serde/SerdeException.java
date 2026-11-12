@@ -4,7 +4,8 @@ import java.util.List;
 
 /**
  * Thrown when a payload cannot be serialized or deserialized: malformed bytes, unknown schema,
- * or a payload that does not conform to its JSON schema ({@link #validationErrors()} is then non-empty).
+ * or a payload/object that violates its Java contract — missing required properties, wrong types or
+ * Bean Validation constraints ({@link #validationErrors()} is then non-empty).
  */
 public class SerdeException extends RuntimeException {
 
@@ -27,7 +28,7 @@ public class SerdeException extends RuntimeException {
         this.validationErrors = List.copyOf(validationErrors);
     }
 
-    /** Schema validation failures; empty for other kinds of errors. */
+    /** Contract violations as {@code $.path: message}; empty for other kinds of errors. */
     public List<String> validationErrors() {
         return validationErrors;
     }
