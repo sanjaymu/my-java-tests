@@ -67,13 +67,15 @@ Prefer the environment variables for secrets so they don't end up in shell histo
 | `config set <LEVEL> [--subject S]` | Set `NONE`, `BACKWARD`, `FORWARD`, `FULL` (+ `_TRANSITIVE`) |
 | `config delete <subject>` | Remove subject-level override |
 | `mode get [subject]` / `mode set <READWRITE\|READONLY\|IMPORT> [--subject S]` / `mode delete <subject>` | Registry modes |
+| `schema generate -c FQCN [--cp PATH] [--register SUBJECT] [--out FILE]` | Generate a JSON schema from a compiled Java class (optionally register it) |
+| `schema check-type <subject> -c FQCN [--cp PATH] [-v VERSION] [--strict]` | Check a Java class against every (or one) registered version (exit code 5 on mismatch) |
 | `payload validate <subject> (-p FILE \| -d JSON) [-v VERSION]` | Validate a JSON payload against a JSON schema (exit code 4 if invalid) |
 | `payload encode <subject> (-p FILE \| -d JSON) [-v VERSION] [--out FILE]` | Validate and frame a payload with its schema id (prints base64 unless `--out`) |
 | `payload decode (-i FILE \| --base64 B64) [--subject S] [--no-validate]` | Resolve a framed message's schema, validate it and print the payload |
 | `local-server [--port 8081] [--host 127.0.0.1]` | Run the in-memory registry |
 
 `-f -` reads the schema from stdin. Exit codes: `0` success, `1` error, `2` usage error / schema not found
-(`lookup`), `3` incompatible (`compat check`), `4` payload failed schema validation (`payload`).
+(`lookup`), `3` incompatible (`compat check`), `4` payload failed schema validation (`payload`), `5` Java type does not match the schema (`check-type`).
 
 ## SDK usage
 
@@ -172,6 +174,56 @@ From the CLI:
 MSG=$(./bin/srctl payload encode orders-value -p examples/order-v2.json)
 ./bin/srctl payload decode --base64 "$MSG" --subject orders-value              # Schema ID: 2 (orders-value v2)
 ```
+
+## Enforcing Java types
+
+The Java model and the registered JSON schema are kept in step from both sides:
+
+- **Producers generate the schema from their Java class** (`forType`), so what's registered always matches the
+  model. Java types map to schema types (`long` → `integer`, `BigDecimal` → `number`, `Instant` →
+  `date-time` string, enums → string enums, `List` → array, `Map` → object). Primitives and
+  `@JsonProperty(required = true)` fields are **required**; other fields are optional and nullable.
+- **Consumers declare their Java class** (`targetType`). It is checked against **every registered version** when
+  the deserializer is built, and against any **new schema id the first time it arrives**, such as a producer
+  moving to v3 after the consumer started. A mismatch throws `SchemaTypeMismatchException` instead of silently
+  losing data.
+
+```java
+// Producer: schema = generated from Order.class, registered on first use
+JsonSchemaSerializer serializer = JsonSchemaSerializer.builder(client)
+        .subject("orders-value").forType(Order.class).autoRegister(true).build();
+
+// Consumer: fails at startup if Order can't hold what the schemas describe
+JsonSchemaDeserializer deserializer = JsonSchemaDeserializer.builder(client)
+        .expectedSubject("orders-value")
+        .targetType(Order.class)
+        .failOnTypeWarnings(false)       // true = strict: also fail on warnings
+        .build();
+deserializer.startupTypeReports();       // per-version warnings, e.g. for logging
+```
+
+What the check reports:
+
+| Errors (consumer refuses to start) | Warnings (normal schema evolution) |
+|---|---|
+| Required schema property missing from the class | Optional schema property missing from the class (ignored on read) |
+| Incompatible types: `number` → `int`, `string` → `long`, `array` → `String`, … | Java property the schema doesn't define (stays `null`/default) |
+| Schema allows `null` but the Java type is primitive | Optional schema property mapped to a primitive (defaults to `0`/`false`) |
+| Schema enum values the Java enum lacks | `oneOf`/`anyOf`/`allOf` or external `$ref` that can't be checked |
+| Java property forbidden by `additionalProperties: false` | |
+
+The same checks are available from the CLI, e.g. in CI before deploying a consumer:
+
+```bash
+javac -cp cli/target/srctl.jar -d /tmp/model examples/model/com/example/orders/*.java
+./bin/srctl schema generate   -c com.example.orders.Order --cp /tmp/model --register orders-value
+./bin/srctl schema check-type orders-value -c com.example.orders.Order       --cp /tmp/model   # OK, exit 0
+./bin/srctl schema check-type orders-value -c com.example.orders.LegacyOrder --cp /tmp/model   # MISMATCH, exit 5
+```
+
+The default mapper (`SerdeMappers.defaultMapper()`) supports `java.time` types, written as ISO-8601 strings,
+keeps `BigDecimal` values exact, and ignores unknown properties. If you pass your own `ObjectMapper`, configure
+it the same way.
 
 ## Using the local server in tests
 

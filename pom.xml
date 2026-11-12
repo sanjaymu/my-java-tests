@@ -24,6 +24,7 @@
     <picocli.version>4.7.6</picocli.version>
     <junit.version>5.11.3</junit.version>
     <json-schema-validator.version>1.5.8</json-schema-validator.version>
+    <victools.version>4.38.0</victools.version>
   </properties>
 
   <dependencyManagement>
@@ -44,6 +45,21 @@
         <version>${project.version}</version>
       </dependency>
       <dependency>
+        <groupId>com.github.victools</groupId>
+        <artifactId>jsonschema-generator</artifactId>
+        <version>${victools.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.victools</groupId>
+        <artifactId>jsonschema-module-jackson</artifactId>
+        <version>${victools.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-nop</artifactId>
+        <version>2.0.16</version>
+      </dependency>
+      <dependency>
         <groupId>com.networknt</groupId>
         <artifactId>json-schema-validator</artifactId>
         <version>${json-schema-validator.version}</version>
@@ -51,6 +67,11 @@
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>
         <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jsr310</artifactId>
         <version>${jackson.version}</version>
       </dependency>
       <dependency>

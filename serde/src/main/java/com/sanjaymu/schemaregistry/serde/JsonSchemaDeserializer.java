@@ -1,7 +1,6 @@
 package com.sanjaymu.schemaregistry.serde;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sanjaymu.schemaregistry.client.SchemaRegistryClient;
@@ -24,9 +23,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * validated against the exact schema it was written with, then mapped to the consumer's class.
  * Unknown properties are ignored by default, so a v1 model can read v2 payloads that add fields.
  *
+ * <h2>Type checking</h2>
+ * With {@link Builder#targetType}, the deserializer verifies that the Java model matches the schemas it will
+ * receive (see {@link SchemaTypeChecker}):
+ * <ul>
+ *   <li>at {@code build()}, against every registered version of {@link Builder#expectedSubject} — the
+ *       consumer fails fast with {@link SchemaTypeMismatchException} instead of silently losing data;</li>
+ *   <li>at runtime, the first time a message arrives with a schema id not seen before (e.g. a producer
+ *       moved to a new version after the consumer started).</li>
+ * </ul>
+ *
  * <pre>{@code
  * JsonSchemaDeserializer deserializer = JsonSchemaDeserializer.builder(client)
  *         .expectedSubject("orders-value")   // reject payloads written with another subject's schema
+ *         .targetType(Order.class)            // fail at startup if Order doesn't match the schemas
  *         .build();
  * Order order = deserializer.deserialize(message, Order.class);
  * }</pre>
@@ -41,12 +51,76 @@ public final class JsonSchemaDeserializer {
     private final String expectedSubject;
     private final Map<Integer, JsonSchemaValidator> validators = new ConcurrentHashMap<>();
     private final Map<Integer, SubjectVersion> subjectVersions = new ConcurrentHashMap<>();
+    private final Class<?> targetType;
+    private final boolean failOnTypeWarnings;
+    private final SchemaTypeChecker typeChecker;
+    private final Map<Integer, TypeCheckReport> typeReportsById = new ConcurrentHashMap<>();
+    private final Map<Integer, TypeCheckReport> startupReports;
 
     private JsonSchemaDeserializer(Builder b) {
         this.client = b.client;
         this.mapper = b.mapper;
         this.validate = b.validate;
         this.expectedSubject = b.expectedSubject;
+        this.targetType = b.targetType;
+        this.failOnTypeWarnings = b.failOnTypeWarnings;
+        this.typeChecker = new SchemaTypeChecker(mapper);
+        this.startupReports = targetType != null && expectedSubject != null ? checkAllVersions() : Map.of();
+    }
+
+    /**
+     * Type-check results per subject version from {@code build()} (empty unless both
+     * {@code targetType} and {@code expectedSubject} are set). Useful for logging warnings.
+     */
+    public Map<Integer, TypeCheckReport> startupTypeReports() {
+        return startupReports;
+    }
+
+    private Map<Integer, TypeCheckReport> checkAllVersions() {
+        List<Integer> versions;
+        try {
+            versions = client.getVersions(expectedSubject);
+        } catch (SchemaRegistryException e) {
+            if (e.errorCode() == SchemaRegistryException.SUBJECT_NOT_FOUND) {
+                return Map.of(); // nothing registered yet; schemas are checked as they arrive
+            }
+            throw new SerdeException("Could not list versions of '" + expectedSubject + "': " + e.getMessage(), e);
+        }
+        Map<Integer, TypeCheckReport> reports = new java.util.TreeMap<>();
+        StringBuilder failures = new StringBuilder();
+        List<String> allErrors = new java.util.ArrayList<>();
+        List<String> allWarnings = new java.util.ArrayList<>();
+        for (int version : versions) {
+            com.sanjaymu.schemaregistry.client.model.SchemaVersion sv = client.getSchemaVersion(expectedSubject, version);
+            if (sv.type() != SchemaType.JSON) {
+                continue;
+            }
+            TypeCheckReport report = typeChecker.check(sv.schema(), targetType);
+            reports.put(version, report);
+            typeReportsById.put(sv.id(), report);
+            if (fails(report)) {
+                failures.append(failures.isEmpty() ? "" : ", ").append("v").append(version);
+                report.errors().forEach(e -> allErrors.add("v" + version + " " + e));
+                report.warnings().forEach(w -> allWarnings.add("v" + version + " " + w));
+            }
+        }
+        if (!failures.isEmpty()) {
+            throw new SchemaTypeMismatchException(targetType.getName() + " does not match subject '" + expectedSubject
+                    + "' " + failures, new TypeCheckReport(allErrors, allWarnings));
+        }
+        return java.util.Collections.unmodifiableMap(reports);
+    }
+
+    private boolean fails(TypeCheckReport report) {
+        return report.hasErrors() || (failOnTypeWarnings && !report.warnings().isEmpty());
+    }
+
+    private void checkType(int id, Class<?> type) {
+        TypeCheckReport report = typeReportsById.computeIfAbsent(id,
+                key -> typeChecker.check(client.getSchemaById(key).schema(), targetType));
+        if (fails(report)) {
+            throw new SchemaTypeMismatchException(type.getName() + " does not match schema id " + id, report);
+        }
     }
 
     public static Builder builder(SchemaRegistryClient client) {
@@ -69,6 +143,10 @@ public final class JsonSchemaDeserializer {
             throw new SerdeException("Payload for schema id " + id + " is not valid JSON", e);
         }
         SubjectVersion sv = expectedSubject != null ? subjectVersionFor(id) : null;
+        if (targetType != null && type == targetType) {
+            validatorFor(id); // ensures the id exists and is a JSON schema
+            checkType(id, type);
+        }
         if (validate) {
             validatorFor(id).validateOrThrow(node, "schema id " + id
                     + (sv != null ? " (" + sv.subject() + " v" + sv.version() + ")" : ""));
@@ -115,10 +193,11 @@ public final class JsonSchemaDeserializer {
 
     public static final class Builder {
         private final SchemaRegistryClient client;
-        private ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        private ObjectMapper mapper = SerdeMappers.defaultMapper();
         private boolean validate = true;
         private String expectedSubject;
+        private Class<?> targetType;
+        private boolean failOnTypeWarnings;
 
         private Builder(SchemaRegistryClient client) {
             this.client = Objects.requireNonNull(client, "client is required");
@@ -136,6 +215,21 @@ public final class JsonSchemaDeserializer {
          */
         public Builder expectedSubject(String subject) {
             this.expectedSubject = subject;
+            return this;
+        }
+
+        /**
+         * The consumer's Java model. It is checked against the schemas of {@link #expectedSubject} when the
+         * deserializer is built, and against each new schema id on first use when deserializing to this type.
+         */
+        public Builder targetType(Class<?> type) {
+            this.targetType = Objects.requireNonNull(type);
+            return this;
+        }
+
+        /** Treat type-check warnings (e.g. optional schema properties the class lacks) as failures. */
+        public Builder failOnTypeWarnings(boolean fail) {
+            this.failOnTypeWarnings = fail;
             return this;
         }
 

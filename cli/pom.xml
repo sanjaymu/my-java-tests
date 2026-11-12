@@ -30,6 +30,12 @@
       <artifactId>picocli</artifactId>
     </dependency>
     <dependency>
+      <!-- silences SLF4J's "no providers" warning from the schema generator -->
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
     </dependency>

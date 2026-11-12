@@ -23,6 +23,8 @@ import java.time.Duration;
                 "  srctl schema register orders-value --file order.avsc",
                 "  srctl compat check orders-value --file order-v2.avsc --verbose",
                 "  srctl payload validate orders-value --payload order.json",
+                "  srctl schema generate --class com.example.Order --cp target/classes --register orders-value",
+                "  srctl schema check-type orders-value --class com.example.Order --cp target/classes",
                 "  srctl local-server --port 8081"},
         subcommands = {
                 SubjectsCommand.class,

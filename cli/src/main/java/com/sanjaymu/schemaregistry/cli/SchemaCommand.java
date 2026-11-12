@@ -24,7 +24,9 @@ import java.util.stream.Collectors;
                 SchemaCommand.LookupCmd.class,
                 SchemaCommand.DeleteCmd.class,
                 SchemaCommand.TypesCmd.class,
-                SchemaCommand.ReferencedByCmd.class
+                SchemaCommand.ReferencedByCmd.class,
+                TypeCommands.GenerateCmd.class,
+                TypeCommands.CheckTypeCmd.class
         })
 final class SchemaCommand {
 
